@@ -1,0 +1,4 @@
+* run program as Command from the program, restarting it if it aborts (if 'broken_pipe' errors keep occuring)
+* improve error handling, introducing custom error types
+* add logging to a file (since stderr on the screen conflicts with the ncurses interface
+* fix display errors with unicode icons
