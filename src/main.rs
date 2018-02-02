@@ -7,8 +7,7 @@ extern crate serde_json;
 extern crate error_chain;
 
 use ncurses::*;
-use std::io::Read;
-use std::process::{Command, Stdio};
+use std::io::{self,Read};
 use std::thread;
 use std::time::Duration;
 use errors::*;
@@ -28,9 +27,6 @@ struct Block {
 #[derive(Serialize, Deserialize, Debug)]
 struct Blocks(Vec<Block>);
 
-static CMD: &'static str = "/home/anton/code/rust/i3status-rust/target/release/i3status-rs";
-static ARG: &'static str = "/home/anton/.config/i3status/config.toml";
-
 fn main() {
     // init ncurses
     initscr();
@@ -46,38 +42,65 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let mut monitor = Command::new(CMD)
-        .arg(ARG)
-        .stdout(Stdio::piped())
-        .spawn()
-        .chain_err(|| "Failed to start programm")?
-        .stdout
-        .chain_err(|| "Failed to pipe program output")?;
+    let mut stdin = io::stdin();
 
     let mut buffer = [0; 2048];
 
-    let mut ch;
-    let _ = monitor.read(&mut buffer); // skip first message
-    let _ = monitor.read_exact(&mut [0; 1]);
-    loop {
-        ch = getch();
-        if ch != ERR {
-            break Ok(());
-        }
+    skip_until(&mut stdin, b'}');
+    skip_until(&mut stdin, b'[');
 
-        if let Ok(_) = monitor.read(&mut buffer) {
-            let blocks = Blocks::from_json(&buffer)?;
-            mvprintw(0, 0, blocks.to_string().as_str());
+    let mut error_count = 0;
+    let mut errors: Vec<Error> = Vec::new();
+
+    loop {
+        if let Ok(_) = stdin.read(&mut buffer) {
+            match Blocks::from_json(&buffer) {
+                Ok(blocks) => {
+                    error_count = 0;
+                    mvprintw(0, 0, blocks.to_string().as_str());
+                },
+                Err(e) => {
+                    error_count += 1;
+                    errors.push(e);
+                    // single errors are okay, but if something
+                    // keeps going wrong, exit, printing all
+                    // errors to stderr
+                    if error_count >= 10 {
+                        for error in errors {
+                            eprintln!("Error: {}", error.display_chain());
+                        }
+                        bail!("10 errors in series");
+                    }
+                },
+            }
         }
         thread::sleep(Duration::new(0,250_000_000));
         refresh();
     }
 }
 
+fn get_last_block(data: &[u8]) -> Result<&[u8]> {
+    let mut end = data.len();
+    while data[end-1] != b']' {
+        if end == 0 {
+            bail!("not enough data read to read block");
+        }
+        end -= 1;
+    }
+    let mut start = end;
+    while data[start] != b'[' {
+        if start == 0 {
+            bail!("not enough data read to read block");
+        }
+        start -= 1;
+    }
+    Ok(&data[start..end])
+}
+
 impl Blocks {
     pub fn from_json(data: &[u8]) -> Result<Self> {
-        let sanitized = Blocks::trim_comma(Blocks::trim_trailing_zeroes(data));
-        let blocks: Vec<Block> = serde_json::from_slice(sanitized)
+        let last_block = get_last_block(data)?;
+        let blocks: Vec<Block> = serde_json::from_slice(last_block)
             .chain_err(|| "failed to parse blocks from json")?;
         Ok(Blocks(blocks))
     }
@@ -90,22 +113,15 @@ impl Blocks {
         }
         out
     }
+}
 
-    fn trim_comma(arr: &[u8]) -> &[u8] {
-        let last_id = arr.len() - 1;
-        let start = if arr[0] == b',' { 1 } else { 0 };
-        let end = if arr[last_id] == b',' { last_id } else { last_id + 1 };
-
-        &arr[start..end]
-    }
-
-    fn trim_trailing_zeroes(arr: &[u8]) -> &[u8] {
-        for i in (0..arr.len()).rev() {
-            if arr[i] != 0 {
-                return &arr[..i+1];
-            }
+fn skip_until<R: Read>(reader: &mut R, ch: u8) {
+    loop {
+        let mut b = [0; 1];
+        let _ = reader.read_exact(&mut b); // skip first message
+        if b[0] == ch {
+            break;
         }
-        return &arr[0..0];
     }
 }
 
