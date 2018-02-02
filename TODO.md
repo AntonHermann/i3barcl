@@ -10,4 +10,4 @@
   - separator
   - markup (at least some of it like bold, ...)
 * (in the far future: support click events of the blocks)
-
+* add comprehensive testing
